@@ -1,0 +1,51 @@
+# Local and single-host deployment stack: the API plus a PostgreSQL instance.
+# To point the API at a database you already run, see docs/deployment.md.
+#
+#   cp .env.example .env      # then fill it in
+#   docker compose up --build
+#
+name: pluto-notifications
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${PG_DATABASE:-pluto_notifications}
+      POSTGRES_USER: ${PG_USER:-pluto}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?PG_PASSWORD must be set in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # The API applies migrations the moment it starts, so it must not start
+    # before the database can answer queries. depends_on alone only waits for
+    # the container, not for PostgreSQL inside it.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-pluto} -d ${PG_DATABASE:-pluto_notifications}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      # Overrides whatever .env says: inside the compose network the database is
+      # reachable by service name, never by the host address used from outside.
+      PG_HOST: db
+      PG_PORT: 5432
+    volumes:
+      # Read-only mount for the Firebase service account. The file is not baked
+      # into the image, and the container cannot modify it. Leave
+      # FIREBASE_CREDENTIALS_FILE unset in .env to run without Firebase.
+      - ./secrets:/run/secrets:ro
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:

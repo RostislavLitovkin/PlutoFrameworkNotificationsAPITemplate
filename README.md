@@ -1,58 +1,83 @@
 # Notifications REST API Template for PlutoFramework
 
-## URLs
+A Django REST API that delivers push notifications to mobile devices, where devices
+authenticate by **app attestation** rather than by user accounts, and can register
+**wallet addresses** — with proof of ownership — as notification targets.
+
+- Android devices prove themselves with Play Integrity, iOS with App Attest. There is
+  no signup, no password, no user table.
+- A device exchanges a passed attestation for a JWT pair and reports its FCM token.
+- A device can link several wallet addresses across chains. Solana links require an
+  Ed25519 signature over a server-built message, so ownership is proven, not claimed.
+- Your backend sends notifications with an API key, targeting either a wallet address
+  or a generic user identifier.
+
+Built on Django 5.2, DRF, `fcm-django`, `djangorestframework-simplejwt`,
+`djangorestframework-api-key`, and `pyattest`.
+
+## Documentation
+
+| | |
+|---|---|
+| [Configuration](docs/configuration.md) | Every environment variable, and the four without which nothing starts. |
+| [API reference](docs/api-reference.md) | All endpoints, payloads, error codes, and the nonce rules. |
+| [Client integration](docs/client-integration.md) | Attestation, tokens, FCM registration, wallet signing. |
+| [Connecting an existing server](docs/server-integration.md) | Sending notifications, reverse proxies, shared database. |
+| [Deployment](docs/deployment.md) | Docker, Compose, PaaS, production checklist, troubleshooting. |
+| [Development](docs/development.md) | Local setup, tests, code layout, adding a chain. |
+
+## Quick start
+
+```bash
+cp .env.example .env          # fill it in — see docs/configuration.md
+mkdir -p secrets              # drop the Firebase service account JSON here
+docker compose up --build
 ```
-GET /admin - All admin tools needed (including login)
-POST /api/nonce - Generate the nonce (needed for app integrity attestation)
-POST /api/token - Register device to get JWT pair
-POST /api/token/refresh - Refresh access token using refresh token
-POST /api/fcm/token-update - Update the FCM token
-POST /api/fcm/send-notification - Send a notification (API key required)
-POST /api/user/uid-update - Update the generic user identifier
-POST /api/user/wallet-link - Link a wallet address to the device
-POST /api/user/wallet-unlink - Remove a linked wallet address
+
+The API is on `http://localhost:8000/`. Create an admin login with:
+
+```bash
+docker compose exec api python manage.py createsuperuser
 ```
+
+Without Docker, see [development.md](docs/development.md#local-setup-without-docker).
+
+## Endpoints
+
+Trailing slashes are **required** — Django redirects the unslashed form, and clients
+turn that redirect into a bodyless GET.
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `POST /api/nonce/` | none | Get a single-use challenge (120 s). |
+| `POST /api/token/` | none | Exchange an attestation for a JWT pair. |
+| `POST /api/token/refresh/` | refresh token | Renew the access token. |
+| `POST /api/fcm/token-update/` | device JWT | Report the FCM registration token. |
+| `POST /api/user/uid-update/` | device JWT | Set a generic user identifier. |
+| `POST /api/user/wallet-link/` | device JWT | Link a wallet address. |
+| `POST /api/user/wallet-unlink/` | device JWT | Remove a linked address. |
+| `POST /api/fcm/send-notification/` | API key | Send a notification. |
+| `/admin/` | session | Django admin — devices, wallet links, API keys. |
 
 ## Wallet linking
 
-A device can link several wallet addresses, across chains, and receive notifications
-for each. This is separate from `uid`, which stays available as a generic,
-unverified identifier.
+A device may link several addresses, across chains, and receive notifications for each.
+This is separate from `uid`, which remains available as a generic, unverified
+identifier.
 
-### Supported chains
-
-| Chain | Ownership proof | Notes |
+| Chain | Ownership proof | Stored as |
 |---|---|---|
-| `solana` | **Required** — Ed25519 signature | Address is a base58 Ed25519 public key |
-| `polkadot` | Not yet implemented | Link is stored with `verified: false` |
+| `solana` | Ed25519 signature, **required** | `verified: true` |
+| `polkadot` | not yet implemented | `verified: false` |
 
 > [!WARNING]
-> Polkadot links are recorded **without** verifying ownership, matching the
-> behaviour of `uid`. Any device holding a valid JWT can claim any Polkadot
-> address. Closing this requires sr25519 verification and SS58 decoding — see
-> `PolkadotVerifier` in `ApiApp/wallets.py`.
+> Polkadot links are recorded **without** verifying ownership, matching the behaviour
+> of `uid`. Any device holding a valid JWT can claim any Polkadot address. Closing this
+> requires sr25519 verification and SS58 decoding — see `PolkadotVerifier` in
+> `ApiApp/wallets.py`.
 
-### Linking flow
-
-1. `POST /api/nonce` → `{"nonce": "..."}`
-2. Have the wallet sign the message below.
-3. `POST /api/user/wallet-link` with the device JWT:
-
-```json
-{
-  "nonce": "<nonce from step 1>",
-  "chain": "solana",
-  "address": "<base58 address>",
-  "signature": "<base58 signature>"
-}
-```
-
-Response: `{"chain": "solana", "address": "...", "verified": true}`
-
-### Message to sign
-
-The server rebuilds this itself and never trusts a client-supplied message, so it
-must match **byte for byte**:
+The flow: get a nonce, have the wallet sign the message below, post it with the device
+JWT.
 
 ```
 PlutoFramework wallet link
@@ -62,114 +87,35 @@ nonce: <nonce>
 device: <device_id>
 ```
 
-- UTF-8, `\n` (LF) separators, **no trailing newline**.
-- `<nonce>` is used exactly as `/api/nonce` returned it — do **not** base64-decode it
-  first (unlike the attestation flow).
-- `<device_id>` must equal the `device_id` the JWT was issued for; the server takes
-  it from the token, so a signature made for one device will not work on another.
-- The `signature` is base58-encoded and must decode to exactly 64 bytes.
+UTF-8, LF separators, no trailing newline, nonce used verbatim. The server rebuilds
+this itself and never trusts a client-supplied message. Full contract and failure modes
+in [api-reference.md](docs/api-reference.md#post-apiuserwallet-link).
 
-Each nonce is single-use and expires after 120 seconds.
+Sending to a linked address:
 
-### Sending to a wallet address
-
-`POST /api/fcm/send-notification` accepts either targeting mode, but not both:
-
-```json
-{"chain": "solana", "address": "<address>", "title": "Hi", "body": "..."}
-{"user_id": "<uid>", "title": "Hi", "body": "..."}
+```bash
+curl -X POST https://<host>/api/fcm/send-notification/ \
+  -H "Authorization: Api-Key <key>" -H "Content-Type: application/json" \
+  -d '{"chain":"solana","address":"<address>","title":"Hi","body":"..."}'
 ```
 
-Linked devices are also subscribed to an FCM topic named after the chain
-(`solana`, `polkadot`) alongside the existing `global` and platform topics.
-## Setup
-### 1. Database
-Set up a database on a remote server and get access credentials, then put them in .env file.
+## Setup prerequisites
 
-### 2. Firebase
-In the Firebase console, open Settings > Service Accounts.
-Click Generate New Private Key, then confirm by clicking Generate Key.
-Securely store that JSON file.
+1. **PostgreSQL** — a database, user, and password.
+2. **Firebase** — console → Settings → Service Accounts → *Generate New Private Key*.
+   Store the JSON in `./secrets/`.
+3. **Play Integrity** (Android) — enable the API in the Play Console, switch response
+   encryption to **manual**, and take the decryption and verification keys. You also
+   need the SHA-256 of your signing certificate.
+4. **App Attest** (iOS) — the `<TEAM ID>.<bundle id>` pair.
 
-### 3. Google Integrity API
-Set up the project (including Play Console and Google Cloud).
-Turn on Integrity API in Console settings.
-Then change response encryption to manual and get the Decryption and Verification keys.
-
-### .env example:
-```dotenv
-# App setup
-DEBUG=0
-DJANGO_ALLOWED_HOSTS=".onrender.com,0.0.0.0"
-SECRET_KEY="***"
-FIREBASE_CREDENTIALS_JSON='{
-  "type": "service_account",
-  "project_id": "...",
-  "private_key_id": "...",
-  "private_key": "-----BEGIN PRIVATE KEY-----...-----END PRIVATE KEY-----\n",
-  "client_email": "...",
-  "client_id": "...",
-  "auth_uri": "https://accounts.google.com...",
-  "token_uri": "https://oauth2.googleapis.com...",
-  "auth_provider_x509_cert_url": "https://www.googleapis.com...",
-  "client_x509_cert_url": "https://www.googleapis.com...",
-  "universe_domain": "googleapis.com"
-}'
-
-# App attestation
-APK_NAME="com.companyname.appname"
-ATTESTATION_DECRYPTION_KEY="***"
-ATTESTATION_VERIFICATION_KEY="***"
-ATTESTATION_APP_SIGNING_KEY="XX:XX:XX:XX:XX:XX..."
-
-# Database setup
-PG_URL="postgresql://..."
-PG_DATABASE="db_name"
-PG_HOST="some.url.com"
-PG_PASSWORD="***"
-PG_PORT="5432"
-PG_USER="admin"
-```
-
-### Install libraries
-```shell
-pip install -r requirements.txt
-```
-### Prepare the database
-```shell
-python manage.py migrate
-```
-
-### Add a superuser to access API as admin (optional)
-```shell
-python manage.py createsuperuser
-```
+Every resulting variable is listed in [`.env.example`](.env.example) and explained in
+[configuration.md](docs/configuration.md).
 
 ## Tests
-The suite runs against in-memory SQLite with throwaway attestation config, so it needs
-neither PostgreSQL nor a `.env`:
-```shell
+
+Runs on in-memory SQLite; no PostgreSQL and no `.env` required.
+
+```bash
 python manage.py test ApiApp --settings=ApiCore.settings_test
 ```
-The address and signature tests in `ApiApp/tests/test_wallets.py` import no Django at
-all, so they can also run standalone:
-```shell
-python -m unittest ApiApp.tests.test_wallets
-```
-
-## Run
-#### Development:
-```shell
-python manage.py runserver
-```
-> [!NOTE]  
-> If DEBUG is off, you will have to collect static like in production
-
-#### Production:
-```shell
-python manage.py collectstatic
-gunicorn ApiCore.wsgi:application --bind 0.0.0.0:$PORT
-```
-
-> [!NOTE]  
-> `$PORT` environment variable should be supplied by hosting platform

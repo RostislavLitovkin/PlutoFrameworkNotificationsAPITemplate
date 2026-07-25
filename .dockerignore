@@ -1,0 +1,38 @@
+# Virtualenvs — a Windows/macOS .venv is useless in a Linux image and huge
+.venv
+venv
+env
+
+# Secrets must arrive at runtime, never be baked into a layer.
+# secrets/ is mounted into the container at /run/secrets — it must never be copied
+# in, or the service account ends up in an image layer that outlives the container.
+.env
+.env.*
+!.env.example
+secrets/
+**/firebase-service-account.json
+*.pem
+*.key
+
+# Build output regenerated inside the image
+static/
+staticfiles/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Local state
+db.sqlite3
+*.log
+
+# Not needed to run the service
+.git
+.gitignore
+.gitattributes
+.github
+.idea
+.vscode
+docs/
+README.md
+docker-compose.yml
+docker-compose.*.yml

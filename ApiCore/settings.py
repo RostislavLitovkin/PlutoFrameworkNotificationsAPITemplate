@@ -23,9 +23,17 @@ from pyattest.configs.google_play_integrity_api import GooglePlayIntegrityApiCon
 load_dotenv()
 
 # Initialize Firebase lib
+#
+# The service account can be supplied either inline as JSON, or as a path to a
+# mounted file. The file form exists for containers: Docker Compose `env_file`
+# cannot carry the multi-line private key, so the credentials are mounted instead.
 cred_json = os.getenv("FIREBASE_CREDENTIALS_JSON")
+cred_file = os.getenv("FIREBASE_CREDENTIALS_FILE")
+
 if cred_json:
     initialize_app(credentials.Certificate(json.loads(cred_json)))
+elif cred_file:
+    initialize_app(credentials.Certificate(cred_file))
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -37,6 +45,23 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 DEBUG = bool(int(os.getenv("DEBUG", "0").strip()))
 
 ALLOWED_HOSTS = os.getenv("DJANGO_ALLOWED_HOSTS").split(",")
+
+# Origins allowed to POST to the admin and any other CSRF-protected view. Required
+# when the site is served from a domain Django does not see itself (a reverse proxy,
+# a platform-assigned hostname), otherwise admin login fails the CSRF origin check.
+# Entries must include the scheme: "https://api.example.com,https://admin.example.com".
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
+# Trust X-Forwarded-Proto when TLS is terminated by a proxy in front of this app,
+# so request.is_secure() reports the scheme the client actually used. Only enable
+# this when such a proxy exists and strips client-supplied copies of the header —
+# otherwise any caller can claim their request arrived over HTTPS.
+if bool(int(os.getenv("USE_X_FORWARDED_PROTO", "0").strip())):
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 # App attestation
 
@@ -112,7 +137,9 @@ WSGI_APPLICATION = 'ApiCore.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'URL': os.getenv('PG_URL'),
+        # Django has no single-URL form; the connection is assembled from the
+        # parts below. A provider that hands out one DATABASE_URL has to be split
+        # into these, see docs/configuration.md.
         'NAME': os.getenv('PG_DATABASE'),
         'USER': os.getenv('PG_USER'),
         'PASSWORD': os.getenv('PG_PASSWORD'),
@@ -192,7 +219,17 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'static'
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+
+# Django 5.1 removed STATICFILES_STORAGE in favour of STORAGES, so the old setting
+# is silently ignored and WhiteNoise's compression never runs. Declared here instead.
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+    },
+}
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
