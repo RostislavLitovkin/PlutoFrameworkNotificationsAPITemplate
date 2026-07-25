@@ -12,3 +12,5 @@ djangorestframework-simplejwt==5.5.1
 pyattest==1.0.2
 pyhanko-certvalidator==0.16.0
 djangorestframework-api-key==3.*
+base58==2.1.1
+cryptography

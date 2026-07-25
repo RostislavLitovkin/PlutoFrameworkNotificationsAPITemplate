@@ -222,8 +222,14 @@ not exist is also `200` — it is idempotent and reveals nothing.
 `user_id`. Validation: **exactly one** targeting mode must be supplied.
 
 - `user_id` alone → existing behaviour, unchanged.
-- `address` + `chain` → `AttestedFCMDevice.objects.filter(wallets__chain=chain, wallets__address=address).distinct()`.
-  `.distinct()` is required because the join can yield a device more than once.
+- `address` + `chain` → `AttestedFCMDevice.targets_by_wallet(chain, address)`, which filters
+  `wallets__chain` / `wallets__address` over devices that hold an FCM token.
+
+  Correction to an earlier draft of this spec: `.distinct()` is *not* required here. The
+  unique constraint on `(device, chain, address)` means a device can match at most once, so
+  the join cannot duplicate rows. It is retained as cheap insurance in case targeting is
+  later widened (for example to an entire chain), and the code says so rather than
+  implying necessity.
 - `address` without `chain`, `user_id` together with `address`, or neither supplied → `400`.
 
 The existing `.exclude(registration_id__isnull=True)` filter and the per-device send loop
@@ -304,9 +310,24 @@ by what each test needs to run:
 `ApiCore/settings.py:39` calls `os.getenv("DJANGO_ALLOWED_HOSTS").split(",")`, which raises
 `AttributeError` when the variable is unset, and `DATABASES` is hardwired to PostgreSQL. So
 `python manage.py test` will not run on a clean checkout without a populated `.env`. The
-`wallets.py` tests avoid this entirely by design (no Django import). The database tests need
-working env vars; availability must be confirmed before relying on them, and the outcome
-reported honestly rather than assumed.
+`wallets.py` tests avoid this entirely by design (no Django import).
+
+Resolved during implementation by adding **`ApiCore/settings_test.py`** (not in the original
+design): it seeds the required environment variables before importing `ApiCore.settings`,
+then swaps in in-memory SQLite. Two further obstacles surfaced only when running it:
+
+- `PLAY_INTEGRITY_CONFIG` is built eagerly at settings import, and pyattest immediately
+  base64-decodes the decryption key, `load_der_public_key`s the verification key, and hex-parses
+  the app signing key. The test settings therefore supply throwaway values in each of those
+  shapes. (That eager construction also means production fails at import with an incomplete
+  environment — pre-existing, and left alone as out of scope.)
+- WhiteNoise warns on every request until `collectstatic` runs, and Django logs every
+  deliberate 4xx assertion as a warning. Both are silenced in test settings only, so that a
+  genuine warning is visible.
+
+The suite runs as:
+
+    python manage.py test ApiApp --settings=ApiCore.settings_test
 
 ## Dependencies
 
