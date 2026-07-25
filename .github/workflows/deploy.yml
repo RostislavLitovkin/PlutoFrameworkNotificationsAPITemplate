@@ -1,0 +1,167 @@
+name: Deploy to Hetzner
+
+# Build the image in CI, push it to GHCR, then have the server pull it. The server
+# never holds the source tree and never builds anything, so a deploy is a pull and a
+# restart — fast, and identical to whatever CI tested.
+#
+# Setup instructions: docs/hetzner-deployment.md
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time. Cancelling a run mid-flight could leave the server between
+# states, so a queued run waits for the current one instead of replacing it.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # settings_test seeds its own throwaway attestation config and swaps in
+      # in-memory SQLite, so this needs neither a database nor any secret.
+      - name: Run the suite
+        run: python manage.py test ApiApp --settings=ApiCore.settings_test
+
+  build:
+    name: Build and push image
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR rejects uppercase image names and this repository has them, so the
+      # owner/repo pair cannot be used verbatim.
+      - name: Compute image name
+        id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          # Hetzner CX/CPX servers are x86; CAX servers are ARM. An image built for
+          # the wrong one fails at start with "exec format error". Override with a
+          # BUILD_PLATFORM repository variable of linux/arm64 for CAX.
+          platforms: ${{ vars.BUILD_PLATFORM || 'linux/amd64' }}
+          push: true
+          # Tagged by commit so a rollback names an exact build, not "the one before".
+          tags: |
+            ${{ steps.name.outputs.image }}:${{ github.sha }}
+            ${{ steps.name.outputs.image }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    # Lets you attach required reviewers or a branch restriction in the repository's
+    # environment settings. GitHub creates the environment on first run.
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE: ${{ needs.build.outputs.image }}:${{ github.sha }}
+      TARGET: ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/pluto-notifications' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          # Pinning the host key is what makes this safe. The alternative,
+          # StrictHostKeyChecking=no, accepts whatever answers on that address and
+          # would hand the deploy key to an impostor.
+          printf '%s\n' "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Ship the compose definition
+        # Sent every deploy, so the server's stack definition always matches the
+        # commit being deployed rather than drifting from whatever was set up by hand.
+        run: scp docker-compose.prod.yml "$TARGET:$DEPLOY_PATH/docker-compose.yml"
+
+      - name: Authenticate the server to GHCR
+        # Piped over stdin so the token never appears in the remote process list.
+        # GITHUB_TOKEN is scoped to this run and expires with it, so no long-lived
+        # registry credential is stored on the server.
+        run: |
+          ssh "$TARGET" "docker login ghcr.io -u '${{ github.actor }}' --password-stdin" \
+            <<< "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Pull and restart
+        run: |
+          ssh "$TARGET" "API_IMAGE='$IMAGE' DEPLOY_PATH='$DEPLOY_PATH' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd "$DEPLOY_PATH"
+
+          # A record of what is running, for humans and for rollback.
+          echo "$API_IMAGE" > current-image.txt
+
+          docker compose pull
+          docker compose up -d --remove-orphans
+          REMOTE
+
+      - name: Wait for the container to report healthy
+        # The deploy is not finished when `up -d` returns — that only means the
+        # container was created. Migrations run at startup and can fail, so wait for
+        # the healthcheck rather than assuming success.
+        run: |
+          ssh "$TARGET" "DEPLOY_PATH='$DEPLOY_PATH' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd "$DEPLOY_PATH"
+
+          container=$(docker compose ps -q api)
+
+          # start-period is 20s and the interval 30s, so the first verdict can take
+          # about a minute. 40 tries at 5s leaves room for a slow migration.
+          for _ in $(seq 1 40); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' "$container" 2>/dev/null || echo unknown)
+            case "$status" in
+              healthy)   echo "api is healthy"; exit 0 ;;
+              unhealthy) break ;;
+            esac
+            sleep 5
+          done
+
+          echo "::error::api did not become healthy"
+          docker compose ps
+          docker compose logs --tail=150 api
+          exit 1
+          REMOTE
+
+      - name: Clean up the server
+        if: always()
+        # Dangling layers accumulate with every deploy and Hetzner disks are small.
+        # Only untagged images go: previous releases stay pullable for rollback.
+        run: |
+          ssh "$TARGET" 'docker image prune -f >/dev/null; docker logout ghcr.io >/dev/null' || true

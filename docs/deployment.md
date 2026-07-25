@@ -103,6 +103,17 @@ docker run --rm --env-file .env --entrypoint python pluto-notifications \
 `--entrypoint python` bypasses the startup script, so this runs the migration and
 nothing else.
 
+## Hetzner, deployed by GitHub Actions
+
+A dedicated guide covers the full path from an empty Hetzner Cloud server to automatic
+deploys on every push to `main` — server provisioning, TLS with Caddy, deploy keys,
+rollback: **[hetzner-deployment.md](hetzner-deployment.md)**.
+
+It uses [`docker-compose.prod.yml`](../docker-compose.prod.yml) rather than the compose
+file above. The difference is that it pulls a pre-built image from GHCR instead of
+building from source, so the server never holds the source tree, and it binds the API
+to loopback so only the reverse proxy can reach it.
+
 ## Platform-as-a-service
 
 Any platform that builds a Dockerfile works unmodified — the image reads `PORT`.

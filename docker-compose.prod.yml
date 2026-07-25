@@ -1,0 +1,49 @@
+# Production stack for a single host. See docs/hetzner-deployment.md.
+#
+# Unlike docker-compose.yml this pulls a pre-built image rather than building from
+# source — the server never holds the source tree. CI ships this file and supplies
+# API_IMAGE, so commands run by hand on the server need it too:
+#
+#   export API_IMAGE=$(cat current-image.txt)
+#   docker compose logs -f api
+#
+name: pluto-notifications
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${PG_DATABASE:-pluto_notifications}
+      POSTGRES_USER: ${PG_USER:-pluto}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?PG_PASSWORD must be set in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-pluto} -d ${PG_DATABASE:-pluto_notifications}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    image: ${API_IMAGE:?API_IMAGE must be set - see docs/hetzner-deployment.md}
+    env_file:
+      - .env
+    environment:
+      PG_HOST: db
+      PG_PORT: 5432
+    volumes:
+      - ./secrets:/run/secrets:ro
+    # Bound to loopback. The reverse proxy on the host terminates TLS and is the only
+    # thing that should reach gunicorn; publishing on 0.0.0.0 would put plaintext HTTP
+    # on the public internet, where device JWTs and API keys are readable in transit.
+    # Override API_BIND only if the proxy runs somewhere other than this host.
+    ports:
+      - "${API_BIND:-127.0.0.1}:${API_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:

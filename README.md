@@ -24,6 +24,7 @@ Built on Django 5.2, DRF, `fcm-django`, `djangorestframework-simplejwt`,
 | [Client integration](docs/client-integration.md) | Attestation, tokens, FCM registration, wallet signing. |
 | [Connecting an existing server](docs/server-integration.md) | Sending notifications, reverse proxies, shared database. |
 | [Deployment](docs/deployment.md) | Docker, Compose, PaaS, production checklist, troubleshooting. |
+| [Hetzner + GitHub Actions](docs/hetzner-deployment.md) | Server setup and automated deploys on every push to `main`. |
 | [Development](docs/development.md) | Local setup, tests, code layout, adding a chain. |
 
 ## Quick start
