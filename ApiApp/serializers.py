@@ -1,8 +1,9 @@
 import logging
 from rest_framework import serializers
 
-from ApiApp.models import AttestedFCMDevice, Nonce
+from ApiApp.models import AttestedFCMDevice, Nonce, WalletLink
 from ApiApp.utils import generate_device_jwt, AttestationHandler
+from ApiApp.wallets import VERIFIERS, InvalidAddress, build_link_message
 
 logger = logging.getLogger(__name__)
 
@@ -15,10 +16,119 @@ class UidSerializer(serializers.Serializer):
     user_id = serializers.CharField(max_length=255)
 
 
+class WalletLinkSerializer(serializers.Serializer):
+    """
+    Link a wallet address to the calling device, proving ownership where possible.
+
+    Expects a `device` in the serializer context. The device identifier is taken
+    from the authenticated JWT and never from the request body, so a signature
+    captured from one device cannot be replayed by another.
+    """
+
+    nonce = serializers.CharField(max_length=255)
+    chain = serializers.ChoiceField(choices=WalletLink.Chain.choices)
+    address = serializers.CharField(max_length=255)
+    signature = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+
+    verified = serializers.BooleanField(read_only=True)
+
+    def validate(self, attrs):
+        chain = attrs['chain']
+        address = attrs['address']
+        nonce = attrs['nonce']
+        signature = attrs.get('signature')
+        device = self.context['device']
+
+        verifier = VERIFIERS[chain]
+
+        # Cheap checks first, so a malformed request does not burn a valid nonce.
+        try:
+            verifier.validate_address(address)
+        except InvalidAddress as error:
+            raise serializers.ValidationError({'address': str(error)})
+
+        if verifier.requires_signature and not signature:
+            raise serializers.ValidationError(
+                {'signature': f'A signature is required to link a {chain} address.'}
+            )
+
+        try:
+            nonce_record = Nonce.objects.get(nonce=nonce)
+        except Nonce.DoesNotExist:
+            raise serializers.ValidationError({'nonce': 'Nonce does not exist.'})
+
+        # Consumed before verifying, so a failed attempt cannot be retried or raced.
+        if not nonce_record.consume():
+            raise serializers.ValidationError({'nonce': 'Nonce is not valid.'})
+
+        if verifier.requires_signature:
+            message = build_link_message(
+                chain=chain, address=address, nonce=nonce, device_id=device.device_id
+            )
+
+            if not verifier.verify_signature(address, message, signature):
+                logger.debug(f'Signature verification failed for {chain} link on {device.id}')
+                raise serializers.ValidationError(
+                    {'signature': 'Signature verification failed.'}
+                )
+
+            attrs['verified'] = True
+        else:
+            # No ownership proof available for this chain yet; recorded as unverified.
+            attrs['verified'] = False
+
+        return attrs
+
+    def create(self, validated_data):
+        link, _ = WalletLink.objects.update_or_create(
+            device=self.context['device'],
+            chain=validated_data['chain'],
+            address=validated_data['address'],
+            defaults={'verified': validated_data['verified']},
+        )
+
+        return link
+
+
+class WalletUnlinkSerializer(serializers.Serializer):
+    chain = serializers.ChoiceField(choices=WalletLink.Chain.choices)
+    address = serializers.CharField(max_length=255)
+
+
 class NotificationPayloadSerializer(serializers.Serializer):
-    user_id = serializers.CharField(max_length=255, required=True)
+    user_id = serializers.CharField(max_length=255, required=False)
+    chain = serializers.ChoiceField(choices=WalletLink.Chain.choices, required=False)
+    address = serializers.CharField(max_length=255, required=False)
     title = serializers.CharField(max_length=150, required=True)
     body = serializers.CharField(max_length=500, required=True)
+
+    def validate(self, attrs):
+        """Exactly one targeting mode: a generic user_id, or a wallet address."""
+        user_id = attrs.get('user_id')
+        address = attrs.get('address')
+        chain = attrs.get('chain')
+
+        if user_id and (address or chain):
+            raise serializers.ValidationError(
+                'Provide either user_id or address and chain, not both.'
+            )
+
+        if not user_id and not address and not chain:
+            raise serializers.ValidationError(
+                'Provide either user_id or address and chain.'
+            )
+
+        if address and not chain:
+            raise serializers.ValidationError(
+                {'chain': 'chain is required when targeting a wallet address.'}
+            )
+
+        if chain and not address:
+            raise serializers.ValidationError(
+                {'address': 'address is required when targeting a chain.'}
+            )
+
+        return attrs
 
 
 class DeviceRegisterSerializer(serializers.Serializer):

@@ -37,6 +37,70 @@ class AttestedFCMDevice(AbstractFCMDevice):
 
         return serialization.load_der_public_key(bytes(self.public_key_der))
 
+    @classmethod
+    def deliverable(cls):
+        """Devices that actually hold an FCM token."""
+        return cls.objects.exclude(registration_id__isnull=True)
+
+    @classmethod
+    def targets_by_uid(cls, uid: str):
+        """Devices registered under a generic user identifier."""
+        return cls.deliverable().filter(uid=uid)
+
+    @classmethod
+    def targets_by_wallet(cls, chain: str, address: str):
+        """
+        Devices that have linked a wallet address on a given chain.
+
+        The unique constraint on WalletLink already means a device matches at most
+        once here; distinct() is kept so the contract holds if targeting is ever
+        widened (for example to a whole chain).
+        """
+        return (
+            cls.deliverable()
+            .filter(wallets__chain=chain, wallets__address=address)
+            .distinct()
+        )
+
+
+class WalletLink(models.Model):
+    """
+    A wallet address a device wants notifications for.
+
+    A device may link several addresses, on several chains. `verified` records
+    whether ownership was actually proven by a signature: Solana links are proven,
+    Polkadot links are not yet (see ApiApp.wallets.PolkadotVerifier), so the
+    difference is stored rather than assumed.
+    """
+
+    class Chain(models.TextChoices):
+        POLKADOT = "polkadot", _("Polkadot")
+        SOLANA = "solana", _("Solana")
+
+    device = models.ForeignKey(
+        AttestedFCMDevice,
+        verbose_name=_("Device"),
+        related_name="wallets",
+        on_delete=models.CASCADE,
+    )
+    chain = models.CharField(verbose_name=_("Chain"), max_length=32, choices=Chain.choices)
+    address = models.TextField(verbose_name=_("Wallet address"))
+    verified = models.BooleanField(verbose_name=_("Ownership verified"), default=False)
+    created_at = models.DateTimeField(verbose_name=_("Linked at"), auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["device", "chain", "address"], name="uniq_device_chain_address"
+            )
+        ]
+        indexes = [models.Index(fields=["chain", "address"])]
+        verbose_name = "Wallet link"
+        verbose_name_plural = "Wallet links"
+
+    def __str__(self):
+        return f"{self.chain}:{self.address}"
+
 
 class Nonce(models.Model):
     nonce = models.CharField(verbose_name=_("Nonce"), max_length=255, primary_key=True)

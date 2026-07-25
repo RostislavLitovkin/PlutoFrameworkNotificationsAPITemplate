@@ -6,12 +6,46 @@ from rest_framework.response import Response
 from rest_framework_api_key.permissions import HasAPIKey
 
 from ApiApp.serializers import (DeviceRegisterSerializer, FCMTokenSerializer, UidSerializer,
-                                NotificationPayloadSerializer)
+                                NotificationPayloadSerializer, WalletLinkSerializer,
+                                WalletUnlinkSerializer)
 from ApiApp.auth import DeviceJWTAuthentication
 from ApiApp.permissions import IsRegisteredDevice
-from ApiApp.models import AttestedFCMDevice, Nonce
+from ApiApp.models import AttestedFCMDevice, Nonce, WalletLink
 
 logger = logging.getLogger(__name__)
+
+
+def subscribe_to_topics(device, topics):
+    """
+    Subscribe a device's FCM token to topics, tolerating FCM failures.
+
+    Does nothing when the device has not reported a token yet; FCMTokenUpdateView
+    catches those subscriptions up once it arrives.
+    """
+    if not device.registration_id:
+        return
+
+    for topic in topics:
+        try:
+            messaging.subscribe_to_topic([device.registration_id], topic)
+        except Exception as e:
+            logger.debug(f'Failed to subscribe device {device.id} to topic {topic}: {e}')
+
+
+def unsubscribe_from_topics(device, topics):
+    if not device.registration_id:
+        return
+
+    for topic in topics:
+        try:
+            messaging.unsubscribe_from_topic([device.registration_id], topic)
+        except Exception as e:
+            logger.debug(f'Failed to unsubscribe device {device.id} from topic {topic}: {e}')
+
+
+def linked_chains(device):
+    """The distinct chains this device has linked a wallet on."""
+    return list(device.wallets.values_list('chain', flat=True).distinct())
 
 
 class NonceView(views.APIView):
@@ -60,13 +94,9 @@ class FCMTokenUpdateView(views.APIView):
         device.registration_id = fcm_token
         device.save(update_fields=['registration_id'])
 
-        # Subscribe to necessary FCM topics
-        topics = ['global', device.type]
-        for topic in topics:
-            try:
-                messaging.subscribe_to_topic([device.registration_id], topic)
-            except Exception as e:
-                logger.debug(f'Failed to subscribe device {device.id} to topic {topic}: {e}')
+        # Subscribe to necessary FCM topics. Chain topics are included here too,
+        # to catch up wallets linked before this device reported a token.
+        subscribe_to_topics(device, ['global', device.type] + linked_chains(device))
 
         return Response({'message': 'Token updated successfully.'}, status=status.HTTP_200_OK)
 
@@ -95,6 +125,64 @@ class UidUpdateView(views.APIView):
         return Response({'message': 'User identifier updated successfully.'}, status=status.HTTP_200_OK)
 
 
+class WalletLinkView(views.APIView):
+    permission_classes = [IsRegisteredDevice]
+    authentication_classes = [DeviceJWTAuthentication]
+
+    serializer_class = WalletLinkSerializer
+
+    def post(self, request):
+        try:
+            device = AttestedFCMDevice.objects.get(device_id=request.device_id)
+        except AttestedFCMDevice.DoesNotExist:
+            # shouldn't happen
+            return Response({'detail': 'Device not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = self.serializer_class(data=request.data, context={'device': device})
+        serializer.is_valid(raise_exception=True)
+
+        link = serializer.save()
+
+        subscribe_to_topics(device, [link.chain])
+
+        return Response(
+            {'chain': link.chain, 'address': link.address, 'verified': link.verified},
+            status=status.HTTP_200_OK
+        )
+
+
+class WalletUnlinkView(views.APIView):
+    permission_classes = [IsRegisteredDevice]
+    authentication_classes = [DeviceJWTAuthentication]
+
+    serializer_class = WalletUnlinkSerializer
+
+    def post(self, request):
+        try:
+            device = AttestedFCMDevice.objects.get(device_id=request.device_id)
+        except AttestedFCMDevice.DoesNotExist:
+            # shouldn't happen
+            return Response({'detail': 'Device not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        chain = serializer.validated_data['chain']
+        address = serializer.validated_data['address']
+
+        # Scoped to this device, so one device cannot unlink another's wallet. Removing
+        # a link that isn't there is a no-op: idempotent, and it reveals nothing about
+        # which addresses other devices have linked.
+        WalletLink.objects.filter(device=device, chain=chain, address=address).delete()
+
+        if not device.wallets.filter(chain=chain).exists():
+            unsubscribe_from_topics(device, [chain])
+
+        return Response(
+            {'message': 'Wallet unlinked successfully.'}, status=status.HTTP_200_OK
+        )
+
+
 class SendNotificationView(views.APIView):
     permission_classes = [HasAPIKey]
 
@@ -104,11 +192,16 @@ class SendNotificationView(views.APIView):
         serializer = self.serializer_class(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        user_id = serializer.validated_data['user_id']
+        user_id = serializer.validated_data.get('user_id')
         title = serializer.validated_data['title']
         body = serializer.validated_data['body']
 
-        devices = AttestedFCMDevice.objects.filter(uid=user_id).exclude(registration_id__isnull=True)
+        if user_id:
+            devices = AttestedFCMDevice.targets_by_uid(user_id)
+        else:
+            devices = AttestedFCMDevice.targets_by_wallet(
+                serializer.validated_data['chain'], serializer.validated_data['address']
+            )
 
         if not devices.exists():
             return Response(
