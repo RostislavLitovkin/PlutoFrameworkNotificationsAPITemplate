@@ -105,6 +105,36 @@ jobs:
           printf '%s\n' "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
+      - name: Verify the pinned host key
+        # "Host key verification failed" from scp cannot say which of three problems
+        # it is; this step can. It separates an empty or invisible secret, a value
+        # that is not a known_hosts line, an entry whose host field does not match
+        # SSH_HOST, and a pinned key the server no longer presents. Fingerprints are
+        # public, so printing them leaks nothing.
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          if [ ! -s ~/.ssh/known_hosts ]; then
+            echo "::error::SSH_KNOWN_HOSTS is empty or not visible to this job. It must be a repository secret or a secret in the 'production' environment."
+            exit 1
+          fi
+
+          echo "Pinned in known_hosts:"
+          if ! ssh-keygen -l -f ~/.ssh/known_hosts; then
+            echo "::error::SSH_KNOWN_HOSTS is not a valid known_hosts line. Use the full ssh-keyscan output — it starts with the host, not with ssh-ed25519."
+            exit 1
+          fi
+
+          echo "Presented by the server right now:"
+          ssh-keyscan -t ed25519 "$SSH_HOST" 2>/dev/null | ssh-keygen -l -f - || echo "(could not reach the server to scan)"
+
+          if ! ssh-keygen -F "$SSH_HOST" -f ~/.ssh/known_hosts >/dev/null; then
+            echo "::error::No known_hosts entry matches SSH_HOST. The first field of the SSH_KNOWN_HOSTS line must be exactly the SSH_HOST value — an IP and a hostname do not match each other."
+            exit 1
+          fi
+
+          echo "known_hosts has an entry for SSH_HOST. If the fingerprints above differ, the pinned key is stale — re-run ssh-keyscan and update the secret."
+
       - name: Ship the compose definition
         # Sent every deploy, so the server's stack definition always matches the
         # commit being deployed rather than drifting from whatever was set up by hand.
