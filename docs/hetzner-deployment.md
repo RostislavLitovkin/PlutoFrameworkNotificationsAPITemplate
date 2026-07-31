@@ -58,7 +58,12 @@ install -d -o deploy -g deploy /opt/pluto-notifications
 
 ## 3. Configuration on the server
 
-Everything secret is provisioned once, by hand, and never travels through CI.
+The app needs two files next to the compose definition: `.env` and
+`secrets/firebase-service-account.json`. They can reach the server two ways — pick
+one.
+
+**Option A — provision by hand, once.** Nothing secret travels through CI; the files
+live only on the server and survive every deploy untouched.
 
 ```bash
 su - deploy
@@ -96,6 +101,18 @@ chmod 600 /opt/pluto-notifications/secrets/firebase-service-account.json
 chmod 600 /opt/pluto-notifications/.env
 ```
 
+**Option B — ship from GitHub secrets on every deploy.** Put the same `.env` content
+into an `ENV_FILE` Actions secret and the service-account JSON into
+`FIREBASE_SERVICE_ACCOUNT` (step 6). When `ENV_FILE` exists, the workflow creates the
+directories, rewrites both files each run with the same `600` permissions, and the
+GitHub secrets become the source of truth — an edit made by hand on the server lasts
+only until the next deploy.
+
+This widens exposure less than it appears: the workflow already holds
+`SSH_PRIVATE_KEY`, so anyone able to read the repository's Actions secrets could log
+in and read the files off the disk anyway. The workflow never writes the values to
+the runner's disk or echoes them; they travel to the server over stdin.
+
 ## 4. The deploy key
 
 Generate a key **for CI only**, separate from your personal one, so it can be revoked
@@ -116,9 +133,15 @@ ssh deploy@<server> cat /etc/ssh/ssh_host_ed25519_key.pub
 ssh-keyscan -t ed25519 <server>          # must contain the same key material
 ```
 
-The `ssh-keyscan` output line is what goes into the `SSH_KNOWN_HOSTS` secret. Pinning
-it is what stops the workflow handing the deploy key to an impostor; the usual
-shortcut, `StrictHostKeyChecking=no`, accepts anything that answers on that address.
+The `ssh-keyscan` output line is what goes into the `SSH_KNOWN_HOSTS` secret — the
+whole line, starting with the host, not just the key. Pinning it is what stops the
+workflow handing the deploy key to an impostor; the usual shortcut,
+`StrictHostKeyChecking=no`, accepts anything that answers on that address.
+
+The deploy job checks the pinned entry before connecting and fails with a specific
+message when the secret is empty, is not a valid known_hosts line, or names a
+different host than `SSH_HOST` — so a misconfigured secret surfaces as a clear error
+rather than a generic `Host key verification failed`.
 
 ## 5. TLS and the reverse proxy
 
@@ -163,6 +186,8 @@ Secrets:
 | `SSH_USER` | `deploy` |
 | `SSH_PRIVATE_KEY` | Contents of `deploy_key` — the whole file, including the BEGIN/END lines |
 | `SSH_KNOWN_HOSTS` | The `ssh-keyscan` line from step 4 |
+| `ENV_FILE` | *Optional, step 3 option B only.* The full production `.env` content |
+| `FIREBASE_SERVICE_ACCOUNT` | *Optional, step 3 option B only.* The service-account JSON |
 
 Variables (both optional):
 
@@ -270,10 +295,10 @@ workflow handles the rest.
 | Symptom | Cause |
 |---|---|
 | `Permission denied (publickey)` | The public half of `deploy_key` is not in `/home/deploy/.ssh/authorized_keys`, or `SSH_USER` is wrong. |
-| `Host key verification failed` | `SSH_KNOWN_HOSTS` is stale — it changes if the server is rebuilt or reimaged. Re-run `ssh-keyscan`. |
+| `Host key verification failed` | `SSH_KNOWN_HOSTS` is stale — it changes if the server is rebuilt or reimaged. Re-run `ssh-keyscan`. The *Verify the pinned host key* step names the exact problem when the secret is empty, malformed, or for the wrong host. |
 | `exec format error` in the api logs | ARM/x86 mismatch. Set `BUILD_PLATFORM=linux/arm64` for CAX servers. |
 | `denied` when the server pulls | The GHCR package is not linked to the repository. **Package → Settings → Manage Actions access**, add the repo with read access. |
-| `scp: No such file or directory` | `DEPLOY_PATH` does not exist on the server, or is not writable by `deploy`. |
+| `scp: No such file or directory` | `DEPLOY_PATH` does not exist on the server, or is not writable by `deploy`. With `ENV_FILE` set (step 3, option B) the workflow creates it itself. |
 | Deploy fails at the health wait | Almost always a failed migration or a bad `.env`. The job prints the logs; `docker compose logs api` shows the same. |
 | Caddy returns 502 | The api container is down, or `API_BIND` was changed so nothing listens on `127.0.0.1:8000`. |
 | `API_IMAGE must be set` | You ran `docker compose` by hand without `export API_IMAGE=$(cat current-image.txt)`. |

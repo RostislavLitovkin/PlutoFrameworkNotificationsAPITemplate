@@ -135,6 +135,27 @@ jobs:
 
           echo "known_hosts has an entry for SSH_HOST. If the fingerprints above differ, the pinned key is stale — re-run ssh-keyscan and update the secret."
 
+      - name: Ship configuration and secrets
+        # Optional alternative to the hand-provisioned flow in docs section 3: when an
+        # ENV_FILE secret exists, it is the source of truth and both files are
+        # rewritten on every deploy — hand edits on the server will not survive.
+        # Values pass through env vars rather than ${{ }} inside the script so their
+        # content cannot inject into the shell, and go over stdin so they never touch
+        # the runner's disk or process list.
+        if: ${{ secrets.ENV_FILE != '' }}
+        env:
+          ENV_FILE: ${{ secrets.ENV_FILE }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          ssh "$TARGET" "install -d -m 700 '$DEPLOY_PATH/secrets'"
+          printf '%s\n' "$ENV_FILE" | ssh "$TARGET" "umask 077 && cat > '$DEPLOY_PATH/.env'"
+          if [ -n "$FIREBASE_SERVICE_ACCOUNT" ]; then
+            printf '%s\n' "$FIREBASE_SERVICE_ACCOUNT" \
+              | ssh "$TARGET" "umask 077 && cat > '$DEPLOY_PATH/secrets/firebase-service-account.json'"
+          else
+            echo "FIREBASE_SERVICE_ACCOUNT secret not set — leaving the server's copy untouched"
+          fi
+
       - name: Ship the compose definition
         # Sent every deploy, so the server's stack definition always matches the
         # commit being deployed rather than drifting from whatever was set up by hand.
