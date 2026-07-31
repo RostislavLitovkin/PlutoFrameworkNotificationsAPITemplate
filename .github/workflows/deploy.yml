@@ -141,12 +141,16 @@ jobs:
         # rewritten on every deploy — hand edits on the server will not survive.
         # Values pass through env vars rather than ${{ }} inside the script so their
         # content cannot inject into the shell, and go over stdin so they never touch
-        # the runner's disk or process list.
-        if: ${{ secrets.ENV_FILE != '' }}
+        # the runner's disk or process list. The skip decision lives in the script
+        # because the `secrets` context is not allowed in a step-level `if`.
         env:
           ENV_FILE: ${{ secrets.ENV_FILE }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
+          if [ -z "$ENV_FILE" ]; then
+            echo "ENV_FILE secret not set — leaving the server's hand-provisioned files untouched"
+            exit 0
+          fi
           # 711, not 700: the api container traverses this directory as UID 10001,
           # not as the deploy user.
           ssh "$TARGET" "install -d -m 711 '$DEPLOY_PATH/secrets'"
