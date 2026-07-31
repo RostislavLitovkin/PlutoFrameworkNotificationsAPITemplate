@@ -94,19 +94,26 @@ Then copy the Firebase service account up:
 scp firebase-service-account.json deploy@<server>:/opt/pluto-notifications/secrets/
 ```
 
-Lock it down — it can send notifications to all your users:
+Lock it down — it can send notifications to all your users — and hand it to the
+container's user. The api container runs as UID 10001, and a bind mount carries host
+ownership through unchanged, so a `600` file owned by root or `deploy` raises
+`PermissionError` inside the container. As root:
 
 ```bash
 chmod 600 /opt/pluto-notifications/secrets/firebase-service-account.json
 chmod 600 /opt/pluto-notifications/.env
+chown 10001 /opt/pluto-notifications/secrets/firebase-service-account.json
 ```
+
+`.env` keeps your ownership: compose reads it on the host and passes the values in as
+environment variables, so the container never opens the file itself.
 
 **Option B — ship from GitHub secrets on every deploy.** Put the same `.env` content
 into an `ENV_FILE` Actions secret and the service-account JSON into
 `FIREBASE_SERVICE_ACCOUNT` (step 6). When `ENV_FILE` exists, the workflow creates the
-directories, rewrites both files each run with the same `600` permissions, and the
-GitHub secrets become the source of truth — an edit made by hand on the server lasts
-only until the next deploy.
+directories, rewrites both files each run with the same `600` permissions and the
+ownership the container needs, and the GitHub secrets become the source of truth — an
+edit made by hand on the server lasts only until the next deploy.
 
 This widens exposure less than it appears: the workflow already holds
 `SSH_PRIVATE_KEY`, so anyone able to read the repository's Actions secrets could log
@@ -297,6 +304,7 @@ workflow handles the rest.
 | `Permission denied (publickey)` | The public half of `deploy_key` is not in `/home/deploy/.ssh/authorized_keys`, or `SSH_USER` is wrong. |
 | `Host key verification failed` | `SSH_KNOWN_HOSTS` is stale — it changes if the server is rebuilt or reimaged. Re-run `ssh-keyscan`. The *Verify the pinned host key* step names the exact problem when the secret is empty, malformed, or for the wrong host. |
 | `exec format error` in the api logs | ARM/x86 mismatch. Set `BUILD_PLATFORM=linux/arm64` for CAX servers. |
+| `PermissionError: [Errno 13] … /run/secrets/…` in the api logs | The container reads secrets as UID 10001, but the mounted file is owned by root or `deploy` with mode `600`. `chown 10001` the file (step 3, option A); with option B the workflow does this itself. |
 | `denied` when the server pulls | The GHCR package is not linked to the repository. **Package → Settings → Manage Actions access**, add the repo with read access. |
 | `scp: No such file or directory` | `DEPLOY_PATH` does not exist on the server, or is not writable by `deploy`. With `ENV_FILE` set (step 3, option B) the workflow creates it itself. |
 | Deploy fails at the health wait | Almost always a failed migration or a bad `.env`. The job prints the logs; `docker compose logs api` shows the same. |

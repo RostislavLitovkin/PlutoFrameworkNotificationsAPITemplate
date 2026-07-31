@@ -147,11 +147,21 @@ jobs:
           ENV_FILE: ${{ secrets.ENV_FILE }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
-          ssh "$TARGET" "install -d -m 700 '$DEPLOY_PATH/secrets'"
+          # 711, not 700: the api container traverses this directory as UID 10001,
+          # not as the deploy user.
+          ssh "$TARGET" "install -d -m 711 '$DEPLOY_PATH/secrets'"
           printf '%s\n' "$ENV_FILE" | ssh "$TARGET" "umask 077 && cat > '$DEPLOY_PATH/.env'"
           if [ -n "$FIREBASE_SERVICE_ACCOUNT" ]; then
+            # rm before writing: after a previous deploy the file belongs to UID
+            # 10001, which a non-root deploy user can replace but not write into.
             printf '%s\n' "$FIREBASE_SERVICE_ACCOUNT" \
-              | ssh "$TARGET" "umask 077 && cat > '$DEPLOY_PATH/secrets/firebase-service-account.json'"
+              | ssh "$TARGET" "umask 077 && rm -f '$DEPLOY_PATH/secrets/firebase-service-account.json' && cat > '$DEPLOY_PATH/secrets/firebase-service-account.json'"
+            # The container reads the file as UID 10001; a 600 file owned by the
+            # deploy user is unreadable there. Plain chown needs root — the docker
+            # fallback covers a non-root deploy user, which can always do this
+            # because deploying already requires docker.
+            ssh "$TARGET" "chown 10001 '$DEPLOY_PATH/secrets/firebase-service-account.json' 2>/dev/null \
+              || docker run --rm -v '$DEPLOY_PATH/secrets:/s' alpine:3 chown 10001 /s/firebase-service-account.json"
           else
             echo "FIREBASE_SERVICE_ACCOUNT secret not set — leaving the server's copy untouched"
           fi
