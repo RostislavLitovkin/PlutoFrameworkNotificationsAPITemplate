@@ -19,7 +19,8 @@ user connects a wallet
   └─ POST /api/user/wallet-link/ → address is now a delivery target
 
 every launch after that
-  └─ POST /api/token/refresh/ when the access token expires (5 min)
+  ├─ GET  /api/user/registration/ → confirm the device is still set up
+  └─ POST /api/token/refresh/     when the access token expires (5 min)
 ```
 
 ## 1. Register the device
@@ -178,6 +179,35 @@ Polkadot addresses can be linked with no signature, but are stored `verified: fa
 see the warning in [api-reference.md](api-reference.md#chain-support).
 
 To remove one, `POST /api/user/wallet-unlink/` with `chain` and `address`.
+
+## 5. Check what the device is registered for
+
+`GET /api/user/registration/` returns the server's view of this device: its `uid`, its
+linked wallets, and whether an FCM token is on file.
+
+```csharp
+var status = await http.GetJsonAsync<RegistrationStatus>(
+    "/api/user/registration/", bearer: accessToken);
+
+if (!status.NotificationsEnabled)
+    await ReportFcmTokenAsync();          // step 3 never completed
+
+bool walletIsRegistered = status.Wallets
+    .Any(w => w.Chain == "solana" && w.Address == address);
+```
+
+Use it to drive UI state rather than trusting local flags. Local state and server state
+drift in ways the app cannot see: a reinstall creates a fresh `device_id` with no
+wallets, an FCM token rotation silently breaks delivery until step 3 runs again, and a
+wallet linked on one device is not linked on another. A toggle showing "notifications on"
+because a local preference says so is exactly the bug this call prevents.
+
+`notifications_enabled: false` is the answer to almost every "I registered but nothing
+arrives" report — it means attestation succeeded but no FCM token ever reached the
+server, so every send skips this device. Calling `/api/fcm/token-update/` fixes it, and
+that call also catches up topic subscriptions for wallets linked in the meantime.
+
+A `404` means the JWT is valid but the device row is gone. Start again from attestation.
 
 ## Trying it without an app
 

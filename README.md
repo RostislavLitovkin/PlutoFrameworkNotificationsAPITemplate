@@ -57,6 +57,7 @@ turn that redirect into a bodyless GET.
 | `POST /api/user/uid-update/` | device JWT | Set a generic user identifier. |
 | `POST /api/user/wallet-link/` | device JWT | Link a wallet address. |
 | `POST /api/user/wallet-unlink/` | device JWT | Remove a linked address. |
+| `GET /api/user/registration/` | device JWT | Check what this device is registered for. |
 | `POST /api/fcm/send-notification/` | API key | Send a notification. |
 | `/admin/` | session | Django admin — devices, wallet links, API keys. |
 

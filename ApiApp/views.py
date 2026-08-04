@@ -183,6 +183,47 @@ class WalletUnlinkView(views.APIView):
         )
 
 
+class RegistrationStatusView(views.APIView):
+    """
+    What the calling device is registered for.
+
+    Read-only self-inspection: the device is resolved from the JWT claim, so this
+    can only ever describe the caller. There is deliberately no way to ask about
+    another device, or to look up an address and learn whether anyone registered it.
+    """
+
+    permission_classes = [IsRegisteredDevice]
+    authentication_classes = [DeviceJWTAuthentication]
+
+    def get(self, request):
+        try:
+            device = AttestedFCMDevice.objects.get(device_id=request.device_id)
+        except AttestedFCMDevice.DoesNotExist:
+            return Response({'detail': 'Device not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(
+            {
+                'device_id': device.device_id,
+                'platform': device.type,
+                'uid': device.uid,
+                # Mirrors the filter in AttestedFCMDevice.deliverable(): a device with
+                # no FCM token is skipped by every send, so this is the difference
+                # between "a row exists" and "a notification would actually arrive".
+                'notifications_enabled': device.registration_id is not None,
+                'wallets': [
+                    {
+                        'chain': wallet.chain,
+                        'address': wallet.address,
+                        'verified': wallet.verified,
+                        'linked_at': wallet.created_at,
+                    }
+                    for wallet in device.wallets.all()
+                ],
+            },
+            status=status.HTTP_200_OK
+        )
+
+
 class SendNotificationView(views.APIView):
     permission_classes = [HasAPIKey]
 

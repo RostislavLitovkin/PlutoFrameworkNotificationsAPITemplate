@@ -1,6 +1,7 @@
 # API reference
 
-All endpoints accept and return JSON. Every route is `POST`.
+All endpoints accept and return JSON. Every route is `POST`, except
+[`GET /api/user/registration/`](#get-apiuserregistration), which only reads.
 
 ## Trailing slashes are mandatory
 
@@ -17,7 +18,7 @@ Always call `/api/nonce/`, `/api/token/`, and so on.
 | Scheme | Header | Used by |
 |---|---|---|
 | None | — | `/api/nonce/`, `/api/token/` |
-| Device JWT | `Authorization: Bearer <access token>` | `/api/token/refresh/`¹, `/api/fcm/token-update/`, `/api/user/uid-update/`, `/api/user/wallet-link/`, `/api/user/wallet-unlink/` |
+| Device JWT | `Authorization: Bearer <access token>` | `/api/token/refresh/`¹, `/api/fcm/token-update/`, `/api/user/uid-update/`, `/api/user/wallet-link/`, `/api/user/wallet-unlink/`, `/api/user/registration/` |
 | API key | `Authorization: Api-Key <key>` | `/api/fcm/send-notification/` |
 
 ¹ `/api/token/refresh/` takes the **refresh** token in the request body, not in a header.
@@ -249,6 +250,80 @@ Removes a linked address from the calling device.
 Idempotent, and scoped to the calling device: unlinking an address that is not linked
 succeeds and reveals nothing about what other devices hold. When the device has no
 remaining addresses on that chain, it is unsubscribed from the chain topic.
+
+---
+
+## GET /api/user/registration/
+
+Reports what the calling device is registered for. This is the endpoint that answers
+"is this account or wallet set up to receive notifications?".
+
+**Auth:** device JWT. **Body:** none — this is the one `GET` in the API.
+
+```http
+GET /api/user/registration/ HTTP/1.1
+Authorization: Bearer <access token>
+```
+
+```json
+{
+  "device_id": "abc-123",
+  "platform": "android",
+  "uid": "customer-42",
+  "notifications_enabled": true,
+  "wallets": [
+    {
+      "chain": "solana",
+      "address": "9xQe...",
+      "verified": true,
+      "linked_at": "2026-08-04T10:12:33.248146Z"
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `device_id` | string | From the JWT claim. Echoed so a client can spot a token issued for a device it no longer is. |
+| `platform` | string | `android` or `ios`. |
+| `uid` | string / null | The identifier set by `/api/user/uid-update/`; `null` if never set. |
+| `notifications_enabled` | bool | Whether an FCM token is on file. |
+| `wallets` | array | Every linked address; `[]` if none. |
+
+### `notifications_enabled` is the field that matters
+
+It is true when the device has reported an FCM token — exactly the condition
+`/api/fcm/send-notification/` uses to pick targets. So it does not mean "a record
+exists", it means **a notification sent right now would actually be attempted**.
+
+A device that attested successfully but never completed `/api/fcm/token-update/`
+reports `false` while still holding a perfectly valid JWT and, possibly, linked
+wallets. That combination is the most common cause of "I registered but nothing
+arrives" — check this field first.
+
+### Checking one specific wallet
+
+There is no query-by-address mode. Fetch the list and check it client-side:
+
+```csharp
+var status = await http.GetJsonAsync<RegistrationStatus>(
+    "/api/user/registration/", bearer: accessToken);
+
+bool willReceive = status.NotificationsEnabled
+    && status.Wallets.Any(w => w.Chain == "solana" && w.Address == address);
+```
+
+One round trip covers every address, and a device can only ever read its own state —
+there is no way to ask whether *someone else's* address is registered. If you need
+that from your backend, the honest signal is the `404` from
+`/api/fcm/send-notification/`.
+
+**Errors:**
+
+| Status | Cause |
+|---|---|
+| `401` / `403` | Missing, expired, or malformed token, or a token with no `device_id` claim. |
+| `404` | Valid token whose device row no longer exists — re-register from `/api/nonce/`. |
 
 ---
 

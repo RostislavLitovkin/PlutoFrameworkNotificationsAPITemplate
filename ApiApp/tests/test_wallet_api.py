@@ -9,6 +9,7 @@ nonce. The base58 encoding itself is pinned independently in test_wallets.py by 
 vector built with a hand-written encoder, so signing with the same library here
 does not hide an encoding error.
 """
+from datetime import datetime
 from unittest.mock import patch
 
 import base58
@@ -199,6 +200,94 @@ class WalletUnlinkTests(DeviceApiTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(WalletLink.objects.filter(device=self.device).exists())
+
+
+class RegistrationStatusTests(DeviceApiTestCase):
+    """What a device can learn about its own registration."""
+
+    def status(self):
+        return self.client.get(reverse("registration_status"))
+
+    def test_reports_platform_uid_and_linked_wallets(self):
+        self.device.uid = "customer-42"
+        self.device.save(update_fields=["uid"])
+        self.link("solana", SOLANA_ADDRESS)
+
+        response = self.status()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["device_id"], "device-a")
+        self.assertEqual(response.data["platform"], "android")
+        self.assertEqual(response.data["uid"], "customer-42")
+        self.assertEqual(
+            response.data["wallets"],
+            [
+                {
+                    "chain": "solana",
+                    "address": SOLANA_ADDRESS,
+                    "verified": True,
+                    "linked_at": WalletLink.objects.get().created_at,
+                }
+            ],
+        )
+
+    def test_renders_linked_at_as_an_iso_8601_string(self):
+        """The wire format api-reference.md promises, not just the Python object."""
+        self.link("solana", SOLANA_ADDRESS)
+
+        linked_at = self.status().json()["wallets"][0]["linked_at"]
+
+        self.assertEqual(
+            datetime.fromisoformat(linked_at), WalletLink.objects.get().created_at
+        )
+
+    def test_reports_notifications_enabled_when_an_fcm_token_is_on_file(self):
+        response = self.status()
+
+        self.assertEqual(response.data["notifications_enabled"], True)
+
+    def test_reports_notifications_disabled_without_an_fcm_token(self):
+        """The device attested but never called token-update, so nothing can reach it."""
+        self.device.registration_id = None
+        self.device.save(update_fields=["registration_id"])
+
+        response = self.status()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["notifications_enabled"], False)
+
+    def test_reports_an_empty_wallet_list_and_null_uid_for_a_fresh_device(self):
+        response = self.status()
+
+        self.assertEqual(response.data["wallets"], [])
+        self.assertIsNone(response.data["uid"])
+
+    def test_does_not_report_another_devices_wallets(self):
+        self.link("solana", SOLANA_ADDRESS)
+        other = AttestedFCMDevice.objects.create(
+            device_id="device-b", type="ios", registration_id="fcm-token-b"
+        )
+        self.authenticate(other)
+
+        response = self.status()
+
+        self.assertEqual(response.data["device_id"], "device-b")
+        self.assertEqual(response.data["wallets"], [])
+
+    def test_requires_device_authentication(self):
+        self.client.credentials()  # drop the JWT
+
+        response = self.status()
+
+        self.assertIn(response.status_code, (401, 403))
+
+    def test_reports_404_when_the_device_row_is_gone(self):
+        """A valid token outliving its device — reinstall plus a purge."""
+        self.device.delete()
+
+        response = self.status()
+
+        self.assertEqual(response.status_code, 404)
 
 
 class NotificationTargetingTests(APITestCase):
