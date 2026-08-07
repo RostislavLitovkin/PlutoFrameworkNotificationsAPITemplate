@@ -238,7 +238,7 @@ class SendNotificationView(views.APIView):
         body = serializer.validated_data['body']
 
         if user_id:
-            devices = AttestedFCMDevice.targets_by_uid(user_id)
+            devices = AttestedFCMDevice.targets_by_main_key(user_id)
         else:
             devices = AttestedFCMDevice.targets_by_wallet(
                 serializer.validated_data['chain'], serializer.validated_data['address']

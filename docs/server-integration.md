@@ -77,14 +77,17 @@ var response = await http.SendAsync(request);
 
 | Target | Use when |
 |---|---|
-| `chain` + `address` | The event belongs to a wallet. Ownership was proven for Solana. |
-| `user_id` | You already have an identifier your own system trusts (customer ID, account number). |
+| `user_id` | The main key. A registered wallet address — in practice a Solana address — matches on any chain with no qualifier; a legacy identifier your own system trusts (customer ID, account number) matches too. |
+| `chain` + `address` | You need the match scoped to one chain. For Solana this only ever matches signature-proven registrations, never a claimed uid. |
 
 Send one or the other, never both — a request carrying both is rejected with 400.
 
-`user_id` matches `AttestedFCMDevice.uid`, which any authenticated device can set to
-any value. Treat it as a routing hint, never as authorisation: do not put anything in
-the notification body that the wrong recipient must not see.
+`user_id` matches registered wallet addresses **and** the legacy
+`AttestedFCMDevice.uid`, which any authenticated device can set to any value —
+including someone else's address. Treat `user_id` as a routing hint, never as
+authorisation: do not put anything in the notification body that the wrong recipient
+must not see. When that matters, target Solana with `chain` + `address`, which only
+matches ownership-proven registrations.
 
 ### What the responses mean
 

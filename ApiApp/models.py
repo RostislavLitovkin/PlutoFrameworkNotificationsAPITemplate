@@ -12,8 +12,9 @@ from ApiCore.settings import ATTESTATION_NONCE_EXPIRY_SECONDS
 
 
 class AttestedFCMDevice(AbstractFCMDevice):
-    # What to identify the user with to then send notifications without using Firebase identifiers
-    # (For example, you could use wallet address)
+    # Legacy generic identifier, kept as a fallback for backends that already have
+    # their own notion of a user. Wallet addresses do not belong here — they are
+    # registered as WalletLink rows, which count as main keys in their own right.
     uid = models.TextField(verbose_name=_("User identifier"), unique=False, null=True)
 
     registration_id = models.TextField(verbose_name=_("Registration token"), unique=False, null=True) # reset unique
@@ -43,9 +44,21 @@ class AttestedFCMDevice(AbstractFCMDevice):
         return cls.objects.exclude(registration_id__isnull=True)
 
     @classmethod
-    def targets_by_uid(cls, uid: str):
-        """Devices registered under a generic user identifier."""
-        return cls.deliverable().filter(uid=uid)
+    def targets_by_main_key(cls, key: str):
+        """
+        Devices registered under a main key.
+
+        A main key is either a registered wallet address — on any chain — or the
+        legacy generic `uid`. A Solana address registered through wallet-link has
+        the same standing as a uid: `user_id` targeting reaches the device with no
+        chain qualifier. distinct() is required, not decorative: one device can
+        match through its uid and a wallet row at once.
+        """
+        return (
+            cls.deliverable()
+            .filter(models.Q(uid=key) | models.Q(wallets__address=key))
+            .distinct()
+        )
 
     @classmethod
     def targets_by_wallet(cls, chain: str, address: str):
@@ -65,12 +78,18 @@ class AttestedFCMDevice(AbstractFCMDevice):
 
 class WalletLink(models.Model):
     """
-    A wallet address a device wants notifications for.
+    A wallet registration: the address is a main key of the device's registration.
 
-    A device may link several addresses, on several chains. `verified` records
-    whether ownership was actually proven by a signature: Solana links are proven,
-    Polkadot links are not yet (see ApiApp.wallets.PolkadotVerifier), so the
-    difference is stored rather than assumed.
+    Each (device, chain, address) is its own record, so the same device registered
+    for a Polkadot and a Solana wallet holds two independent rows — neither one
+    overwrites or subordinates the other. The address targets the device directly,
+    both chain-scoped (targets_by_wallet) and as a bare main key
+    (targets_by_main_key), with the same standing as the legacy `uid`.
+
+    `verified` records whether ownership was actually proven by a signature:
+    Solana registrations are proven, Polkadot registrations are not yet (see
+    ApiApp.wallets.PolkadotVerifier), so the difference is stored rather than
+    assumed.
     """
 
     class Chain(models.TextChoices):

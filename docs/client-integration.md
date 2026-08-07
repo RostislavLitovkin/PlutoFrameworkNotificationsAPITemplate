@@ -16,7 +16,7 @@ first launch
 user connects a wallet
   ├─ POST /api/nonce/            → nonce
   ├─ wallet signs the link message
-  └─ POST /api/user/wallet-link/ → address is now a delivery target
+  └─ POST /api/user/wallet-link/ → address is now a main key of this device
 
 every launch after that
   ├─ GET  /api/user/registration/ → confirm the device is still set up
@@ -136,10 +136,15 @@ await http.PostJsonAsync("/api/fcm/token-update/", new { fcm_token = token },
 Call it after registration, and again whenever Firebase rotates the token
 (`OnNewToken` on Android, `DidReceiveRegistrationToken` on iOS). It is safe to repeat.
 
-## 4. Link a wallet
+## 4. Register a wallet
 
-A device may link many addresses across many chains. Each is an independent delivery
-target, and unlike `uid` a Solana link is proof of ownership rather than a claim.
+Registering a wallet makes its address a **main key** of this device: your backend
+can then send to the bare address with `user_id`, exactly as it would send to a uid —
+no chain qualifier needed. A device may register many addresses across many chains,
+and each chain is recorded separately: registering the same device for a Polkadot and
+a Solana wallet keeps both registrations side by side. Unlike `uid`, a Solana
+registration is proof of ownership rather than a claim — and in practice Solana is
+the chain that matters.
 
 ```csharp
 var nonce = await GetNonceAsync();
@@ -175,15 +180,16 @@ Checklist when the server answers `Signature verification failed`:
 - The signature is base58, not base64, and must decode to exactly 64 bytes.
 - The nonce is already spent. Every failed attempt needs a fresh one.
 
-Polkadot addresses can be linked with no signature, but are stored `verified: false` —
-see the warning in [api-reference.md](api-reference.md#chain-support).
+Polkadot addresses can be registered with no signature, but are stored
+`verified: false` — see the warning in [api-reference.md](api-reference.md#chain-support).
 
-To remove one, `POST /api/user/wallet-unlink/` with `chain` and `address`.
+To remove one, `POST /api/user/wallet-unlink/` with `chain` and `address`. Removing
+one chain's registration leaves the other chains' registrations untouched.
 
 ## 5. Check what the device is registered for
 
 `GET /api/user/registration/` returns the server's view of this device: its `uid`, its
-linked wallets, and whether an FCM token is on file.
+registered wallets, and whether an FCM token is on file.
 
 ```csharp
 var status = await http.GetJsonAsync<RegistrationStatus>(

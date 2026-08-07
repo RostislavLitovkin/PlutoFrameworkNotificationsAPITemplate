@@ -143,5 +143,8 @@ Existing migrations: `0001_initial`, `0002` (nonce model), `0003` (device `uid`)
 
 ## Design notes
 
-`docs/superpowers/specs/2026-07-25-solana-wallet-support-design.md` records why wallet
-linking is shaped the way it is, including the deliberately accepted Polkadot gap.
+| Spec | Records |
+|---|---|
+| `docs/superpowers/specs/2026-07-25-solana-wallet-support-design.md` | Why wallet registration is shaped the way it is, including the deliberately accepted Polkadot gap. |
+| `docs/superpowers/specs/2026-08-04-registration-status-design.md` | The read-only registration status endpoint. |
+| `docs/superpowers/specs/2026-08-07-wallet-main-key-design.md` | Why registered wallet addresses are main keys: `user_id` targeting matches them on any chain, each chain's registration is its own record, and `uid` is demoted to a legacy fallback. |

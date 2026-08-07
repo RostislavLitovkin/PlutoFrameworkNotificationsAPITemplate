@@ -107,7 +107,7 @@ Change these in `ApiCore/settings.py` if the defaults do not fit:
 |---|---|---|
 | `ACCESS_TOKEN_LIFETIME` | 5 minutes | How often a client must call `/api/token/refresh/`. |
 | `REFRESH_TOKEN_LIFETIME` | 20 days | After this, the device must re-attest from scratch. |
-| `ATTESTATION_NONCE_EXPIRY_SECONDS` | 120 | Lifetime of a nonce, for both attestation and wallet linking. |
+| `ATTESTATION_NONCE_EXPIRY_SECONDS` | 120 | Lifetime of a nonce, for both attestation and wallet registration. |
 | `ATTESTATION_NONCE_CLEANUP_TIMEOUT_SECONDS` | 300 | Minimum gap between expired-nonce sweeps. |
 | `DELETE_INACTIVE_DEVICES` | `True` | A device FCM rejects is deleted, taking its wallet links with it (`on_delete=CASCADE`). |
 | `ONE_DEVICE_PER_USER` | `False` | Several devices may share a `uid` or a wallet address; all of them get notified. |

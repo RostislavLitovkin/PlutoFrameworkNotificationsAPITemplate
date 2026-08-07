@@ -316,9 +316,57 @@ class NotificationTargetingTests(APITestCase):
         self.assertEqual(list(targets), [])
 
     def test_targets_by_legacy_uid(self):
-        targets = AttestedFCMDevice.targets_by_uid("legacy-uid")
+        targets = AttestedFCMDevice.targets_by_main_key("legacy-uid")
 
         self.assertEqual(list(targets), [self.device])
+
+    def test_a_registered_solana_address_is_a_main_key(self):
+        """The wallet address targets the device directly, without any uid involved."""
+        targets = AttestedFCMDevice.targets_by_main_key(SOLANA_ADDRESS)
+
+        self.assertEqual(list(targets), [self.device])
+
+    def test_a_registered_polkadot_address_is_a_main_key(self):
+        WalletLink.objects.create(
+            device=self.other, chain="polkadot", address=POLKADOT_ADDRESS, verified=False
+        )
+
+        targets = AttestedFCMDevice.targets_by_main_key(POLKADOT_ADDRESS)
+
+        self.assertEqual(list(targets), [self.other])
+
+    def test_polkadot_and_solana_registrations_on_one_device_are_separate_records(self):
+        """The same device registered for both chains holds two independent rows,
+        and either address reaches it as a main key."""
+        WalletLink.objects.create(
+            device=self.device, chain="polkadot", address=POLKADOT_ADDRESS, verified=False
+        )
+
+        self.assertEqual(self.device.wallets.count(), 2)
+        self.assertEqual(
+            list(AttestedFCMDevice.targets_by_main_key(SOLANA_ADDRESS)), [self.device]
+        )
+        self.assertEqual(
+            list(AttestedFCMDevice.targets_by_main_key(POLKADOT_ADDRESS)), [self.device]
+        )
+
+    def test_a_device_whose_uid_equals_its_wallet_address_matches_once(self):
+        self.device.uid = SOLANA_ADDRESS
+        self.device.save(update_fields=["uid"])
+
+        targets = AttestedFCMDevice.targets_by_main_key(SOLANA_ADDRESS)
+
+        self.assertEqual(list(targets), [self.device])
+
+    def test_main_key_targeting_skips_devices_that_have_no_fcm_token(self):
+        tokenless = AttestedFCMDevice.objects.create(device_id="device-c", type="android")
+        WalletLink.objects.create(
+            device=tokenless, chain="solana", address=SECOND_SOLANA_ADDRESS, verified=True
+        )
+
+        targets = AttestedFCMDevice.targets_by_main_key(SECOND_SOLANA_ADDRESS)
+
+        self.assertEqual(list(targets), [])
 
     def test_skips_devices_that_have_no_fcm_token(self):
         tokenless = AttestedFCMDevice.objects.create(device_id="device-c", type="android")
@@ -364,6 +412,16 @@ class SendNotificationTests(APITestCase):
         """Regression: existing senders must keep working unchanged."""
         with patch.object(AttestedFCMDevice, "send_message") as send_message:
             response = self.send(user_id="legacy-uid")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["success_count"], 1)
+        self.assertEqual(send_message.call_count, 1)
+
+    def test_user_id_targeting_accepts_a_registered_wallet_address(self):
+        """A registered Solana address is a main key: user_id targeting finds it
+        with no chain qualifier and no uid ever set."""
+        with patch.object(AttestedFCMDevice, "send_message") as send_message:
+            response = self.send(user_id=SOLANA_ADDRESS)
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["success_count"], 1)

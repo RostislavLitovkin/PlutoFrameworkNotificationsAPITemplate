@@ -35,7 +35,8 @@ longer exists returns **404** (`{"detail": "Device not found."}`).
 
 ## POST /api/nonce/
 
-Issues a single-use challenge. Required before attestation and before wallet linking.
+Issues a single-use challenge. Required before attestation and before wallet
+registration.
 
 **Auth:** none. **Body:** none.
 
@@ -137,7 +138,7 @@ Call this whenever FCM rotates the token, or notifications stop reaching the dev
 
 ## POST /api/user/uid-update/
 
-Sets the device's generic user identifier.
+Sets the device's **legacy** generic identifier.
 
 **Auth:** device JWT.
 
@@ -150,16 +151,20 @@ Sets the device's generic user identifier.
 ```
 
 `uid` is **unverified and single-valued** — one per device, overwritten on each call,
-and any authenticated device can claim any value. Use it for an identifier your own
-backend already trusts. For wallet addresses, prefer `/api/user/wallet-link/`, which
-proves ownership and holds many addresses at once.
+and any authenticated device can claim any value. It exists for an identifier your
+own backend already trusts (a customer ID, an account number). Wallet addresses do
+**not** belong here: register them with `/api/user/wallet-link/`, which makes the
+address a main key in its own right, proves ownership for Solana, and records each
+chain separately instead of overwriting.
 
 ---
 
 ## POST /api/user/wallet-link/
 
-Links a wallet address to the calling device, proving ownership where the chain
-supports it.
+Registers a wallet address as a **main key** of the calling device, proving ownership
+where the chain supports it. Once registered, the address targets this device on its
+own — `/api/fcm/send-notification/` reaches it via `user_id` with the bare address,
+or via `chain` + `address` when the sender wants the match scoped to one chain.
 
 **Auth:** device JWT.
 
@@ -174,8 +179,10 @@ supports it.
 { "chain": "solana", "address": "9xQe...", "verified": true }
 ```
 
-Linking the same address twice updates the existing row rather than duplicating it.
-A device may hold many addresses across many chains.
+Registering the same address twice updates the existing row rather than duplicating
+it. A device may hold many addresses across many chains, and each `(chain, address)`
+pair is its own record: registering the same device for a Polkadot **and** a Solana
+wallet keeps both, separately — neither overwrites the other, unlike `uid`.
 
 On success the device is also subscribed to an FCM topic named after the chain.
 
@@ -225,10 +232,10 @@ transaction or against another service.
 | `polkadot` | none yet | `verified: false` |
 
 > [!WARNING]
-> Polkadot links are recorded **without** verifying ownership, matching the behaviour
-> of `uid`. Any device holding a valid JWT can claim any Polkadot address and receive
-> notifications aimed at it. Closing this needs sr25519 verification and an SS58
-> decoder — see `PolkadotVerifier` in `ApiApp/wallets.py`.
+> Polkadot registrations are recorded **without** verifying ownership, matching the
+> behaviour of `uid`. Any device holding a valid JWT can claim any Polkadot address
+> and receive notifications aimed at it. Closing this needs sr25519 verification and
+> an SS58 decoder — see `PolkadotVerifier` in `ApiApp/wallets.py`.
 
 ---
 
@@ -338,18 +345,31 @@ Exactly one targeting mode:
 
 | Field | Type | Notes |
 |---|---|---|
-| `user_id` | string (≤255) | Targets devices whose `uid` matches. |
-| `chain` + `address` | string + string | Targets devices that linked that address on that chain. |
+| `user_id` | string (≤255) | Targets by **main key**: devices that registered that wallet address on *any* chain, plus devices whose legacy `uid` matches. |
+| `chain` + `address` | string + string | Targets devices that registered that address on that one chain. |
 | `title` | string (≤150) | Required. |
 | `body` | string (≤500) | Required. |
+
+The usual call — a registered Solana address as the main key, no chain qualifier:
+
+```json
+{ "user_id": "9xQe...", "title": "Transfer received", "body": "+2.5 SOL" }
+```
+
+Chain-scoped, when the same string must not match another chain (or a uid):
 
 ```json
 { "chain": "solana", "address": "9xQe...", "title": "Transfer received", "body": "+2.5 SOL" }
 ```
 
+Legacy identifier set through `/api/user/uid-update/`:
+
 ```json
 { "user_id": "customer-42", "title": "Transfer received", "body": "+2.5 SOL" }
 ```
+
+A device matching several ways — say its uid equals a registered address — is sent to
+once.
 
 Response:
 
@@ -367,7 +387,7 @@ per device and a failure on one does not abort the rest — hence the two counte
 |---|---|
 | `400` | Both targeting modes given, neither given, or `chain`/`address` supplied alone. |
 | `401` | Missing or invalid API key. |
-| `404` | No device holds that `uid` or address, or none has an FCM token yet. |
+| `404` | No device holds that main key or address, or none has an FCM token yet. |
 
 Treat `404` as a normal outcome, not an incident: it just means nobody is listening.
 
@@ -380,7 +400,7 @@ differently. Getting this wrong is the most common integration failure.
 
 | Flow | What to do with the nonce string |
 |---|---|
-| Wallet linking | Use it **verbatim** in the message to sign. |
+| Wallet registration | Use it **verbatim** in the message to sign. |
 | Android attestation | Pad it to a multiple of 4 with `=`, then set it as the Play Integrity nonce. |
 | iOS attestation | URL-safe-base64-decode it to 32 raw bytes and use those as the challenge. |
 

@@ -7,10 +7,12 @@ authenticate by **app attestation** rather than by user accounts, and can regist
 - Android devices prove themselves with Play Integrity, iOS with App Attest. There is
   no signup, no password, no user table.
 - A device exchanges a passed attestation for a JWT pair and reports its FCM token.
-- A device can link several wallet addresses across chains. Solana links require an
-  Ed25519 signature over a server-built message, so ownership is proven, not claimed.
-- Your backend sends notifications with an API key, targeting either a wallet address
-  or a generic user identifier.
+- A device registers wallet addresses as its **main keys** — each chain recorded
+  separately, so one device can hold a Solana and a Polkadot registration at once.
+  Solana registrations require an Ed25519 signature over a server-built message, so
+  ownership is proven, not claimed.
+- Your backend sends notifications with an API key, targeting a registered wallet
+  address — with or without a chain qualifier — or a legacy generic identifier.
 
 Built on Django 5.2, DRF, `fcm-django`, `djangorestframework-simplejwt`,
 `djangorestframework-api-key`, and `pyattest`.
@@ -54,18 +56,21 @@ turn that redirect into a bodyless GET.
 | `POST /api/token/` | none | Exchange an attestation for a JWT pair. |
 | `POST /api/token/refresh/` | refresh token | Renew the access token. |
 | `POST /api/fcm/token-update/` | device JWT | Report the FCM registration token. |
-| `POST /api/user/uid-update/` | device JWT | Set a generic user identifier. |
-| `POST /api/user/wallet-link/` | device JWT | Link a wallet address. |
-| `POST /api/user/wallet-unlink/` | device JWT | Remove a linked address. |
+| `POST /api/user/uid-update/` | device JWT | Set a legacy generic identifier. |
+| `POST /api/user/wallet-link/` | device JWT | Register a wallet address as a main key. |
+| `POST /api/user/wallet-unlink/` | device JWT | Remove a registered address. |
 | `GET /api/user/registration/` | device JWT | Check what this device is registered for. |
 | `POST /api/fcm/send-notification/` | API key | Send a notification. |
 | `/admin/` | session | Django admin — devices, wallet links, API keys. |
 
-## Wallet linking
+## Wallet registration
 
-A device may link several addresses, across chains, and receive notifications for each.
-This is separate from `uid`, which remains available as a generic, unverified
-identifier.
+A registered wallet address is a **main key** of the device's registration, not an
+auxiliary link. A device may register several addresses across chains, and each
+`(chain, address)` pair is its own record: registering the same device for a Polkadot
+and a Solana wallet keeps both, separately, with neither overwriting the other. In
+practice Solana is the primary chain; `uid` remains only as a legacy fallback for an
+identifier your own backend already trusts.
 
 | Chain | Ownership proof | Stored as |
 |---|---|---|
@@ -73,10 +78,10 @@ identifier.
 | `polkadot` | not yet implemented | `verified: false` |
 
 > [!WARNING]
-> Polkadot links are recorded **without** verifying ownership, matching the behaviour
-> of `uid`. Any device holding a valid JWT can claim any Polkadot address. Closing this
-> requires sr25519 verification and SS58 decoding — see `PolkadotVerifier` in
-> `ApiApp/wallets.py`.
+> Polkadot registrations are recorded **without** verifying ownership, matching the
+> behaviour of `uid`. Any device holding a valid JWT can claim any Polkadot address.
+> Closing this requires sr25519 verification and SS58 decoding — see
+> `PolkadotVerifier` in `ApiApp/wallets.py`.
 
 The flow: get a nonce, have the wallet sign the message below, post it with the device
 JWT.
@@ -93,9 +98,13 @@ UTF-8, LF separators, no trailing newline, nonce used verbatim. The server rebui
 this itself and never trusts a client-supplied message. Full contract and failure modes
 in [api-reference.md](docs/api-reference.md#post-apiuserwallet-link).
 
-Sending to a linked address:
+Sending to a registered address — as a bare main key, or scoped to a chain:
 
 ```bash
+curl -X POST https://<host>/api/fcm/send-notification/ \
+  -H "Authorization: Api-Key <key>" -H "Content-Type: application/json" \
+  -d '{"user_id":"<address>","title":"Hi","body":"..."}'
+
 curl -X POST https://<host>/api/fcm/send-notification/ \
   -H "Authorization: Api-Key <key>" -H "Content-Type: application/json" \
   -d '{"chain":"solana","address":"<address>","title":"Hi","body":"..."}'

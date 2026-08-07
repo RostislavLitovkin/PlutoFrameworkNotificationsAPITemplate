@@ -103,7 +103,11 @@ class NotificationPayloadSerializer(serializers.Serializer):
     body = serializers.CharField(max_length=500, required=True)
 
     def validate(self, attrs):
-        """Exactly one targeting mode: a generic user_id, or a wallet address."""
+        """
+        Exactly one targeting mode. `user_id` is a main key — a registered wallet
+        address on any chain, or a legacy uid. `chain` + `address` scopes the
+        match to one chain.
+        """
         user_id = attrs.get('user_id')
         address = attrs.get('address')
         chain = attrs.get('chain')
