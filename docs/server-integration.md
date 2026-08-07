@@ -73,6 +73,17 @@ var response = await http.SendAsync(request);
 `AuthenticationHeaderValue("Api-Key", key)` is right — the scheme is literally
 `Api-Key`, not `Bearer`.
 
+Both examples send a plain notification. To hand the app something to act on, add an
+optional `data` object — **string values only**, or the call is rejected with 400:
+
+```json
+{ "user_id": "9xQe...", "title": "Transfer received", "body": "+2.5 SOL",
+  "data": { "kind": "transfer", "tx": "abc123" } }
+```
+
+The tray notification still auto-displays when the app is in the background; tapping
+it launches the app with each data key as an intent extra.
+
 ### Choosing a target
 
 | Target | Use when |
@@ -94,7 +105,7 @@ matches ownership-proven registrations.
 | Status | Meaning | Your move |
 |---|---|---|
 | `200` | Delivery was attempted. Check `success_count` / `failure_count`. | Log the failure count; individual failures are usually stale FCM tokens, which get cleaned up automatically. |
-| `400` | Malformed payload — no target, both targets, or `title`/`body` too long (150 / 500). | Fix the caller. Never retry. |
+| `400` | Malformed payload — no target, both targets, `title`/`body` too long (150 / 500), or a non-string `data` value. | Fix the caller. Never retry. |
 | `401` | Missing, wrong, or revoked API key. | Fix the credential. Never retry. |
 | `404` | No device matches. | Normal. Do not alert. |
 

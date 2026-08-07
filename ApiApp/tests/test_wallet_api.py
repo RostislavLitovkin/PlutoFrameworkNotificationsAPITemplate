@@ -427,6 +427,35 @@ class SendNotificationTests(APITestCase):
         self.assertEqual(response.data["success_count"], 1)
         self.assertEqual(send_message.call_count, 1)
 
+    def test_forwards_data_payload_with_the_notification(self):
+        """Key-value strings ride along in the FCM data payload."""
+        with patch.object(AttestedFCMDevice, "send_message") as send_message:
+            response = self.send(
+                chain="solana",
+                address=SOLANA_ADDRESS,
+                data={"tx": "abc123", "kind": "transfer"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        message = send_message.call_args[0][0]
+        self.assertEqual(message.data, {"tx": "abc123", "kind": "transfer"})
+
+    def test_data_is_optional(self):
+        """Existing callers that send no data keep working, with no payload attached."""
+        with patch.object(AttestedFCMDevice, "send_message") as send_message:
+            response = self.send(chain="solana", address=SOLANA_ADDRESS)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(send_message.call_args[0][0].data)
+
+    def test_rejects_data_with_non_string_values(self):
+        """FCM only accepts string values, so a nested object must fail loudly."""
+        response = self.send(
+            chain="solana", address=SOLANA_ADDRESS, data={"nested": {"a": "b"}}
+        )
+
+        self.assertEqual(response.status_code, 400)
+
     def test_rejects_both_targeting_modes_at_once(self):
         response = self.send(user_id="legacy-uid", chain="solana", address=SOLANA_ADDRESS)
 

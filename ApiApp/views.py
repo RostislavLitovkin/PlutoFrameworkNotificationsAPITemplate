@@ -250,11 +250,15 @@ class SendNotificationView(views.APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
+        # Notification + data together, deliberately: with the app in the background
+        # FCM still auto-displays the tray notification, and tapping it launches the
+        # app with each data key as an intent extra — no click_action plumbing needed.
         message = messaging.Message(
             notification=messaging.Notification(
                 title=title,
                 body=body,
             ),
+            data=serializer.validated_data.get('data') or None,
         )
 
         success_count = 0

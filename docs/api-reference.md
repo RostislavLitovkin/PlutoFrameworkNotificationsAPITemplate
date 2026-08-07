@@ -349,11 +349,17 @@ Exactly one targeting mode:
 | `chain` + `address` | string + string | Targets devices that registered that address on that one chain. |
 | `title` | string (≤150) | Required. |
 | `body` | string (≤500) | Required. |
+| `data` | object | Optional. String-to-string pairs, forwarded verbatim as the FCM data payload. |
 
 The usual call — a registered Solana address as the main key, no chain qualifier:
 
 ```json
-{ "user_id": "9xQe...", "title": "Transfer received", "body": "+2.5 SOL" }
+{
+  "user_id": "9xQe...",
+  "title": "Transfer received",
+  "body": "+2.5 SOL",
+  "data": { "kind": "transfer", "tx": "abc123" }
+}
 ```
 
 Chain-scoped, when the same string must not match another chain (or a uid):
@@ -371,6 +377,19 @@ Legacy identifier set through `/api/user/uid-update/`:
 A device matching several ways — say its uid equals a registered address — is sent to
 once.
 
+### The `data` payload
+
+Every value must be a **string** — FCM accepts nothing else, so the API rejects
+anything nested or non-string with a `400` rather than letting Firebase fail the send
+later. Omitting `data` sends a plain notification, so existing callers are
+unaffected.
+
+Sending notification and data **together** is deliberate: with the app in the
+background, FCM still auto-displays the tray notification, and tapping it launches
+the app with each data key as an intent extra — no `click_action` or intent-filter
+plumbing needed. With the app in the foreground, the message handler receives the
+data directly.
+
 Response:
 
 ```json
@@ -385,7 +404,7 @@ per device and a failure on one does not abort the rest — hence the two counte
 
 | Status | Cause |
 |---|---|
-| `400` | Both targeting modes given, neither given, or `chain`/`address` supplied alone. |
+| `400` | Both targeting modes given, neither given, `chain`/`address` supplied alone, or a `data` value that is not a string. |
 | `401` | Missing or invalid API key. |
 | `404` | No device holds that main key or address, or none has an FCM token yet. |
 

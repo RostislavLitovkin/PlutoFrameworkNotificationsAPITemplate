@@ -101,6 +101,9 @@ class NotificationPayloadSerializer(serializers.Serializer):
     address = serializers.CharField(max_length=255, required=False)
     title = serializers.CharField(max_length=150, required=True)
     body = serializers.CharField(max_length=500, required=True)
+    # FCM requires every data value to be a string; CharField children enforce it here
+    # rather than letting Firebase reject the send later.
+    data = serializers.DictField(child=serializers.CharField(), required=False)
 
     def validate(self, attrs):
         """
